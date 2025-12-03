@@ -1,0 +1,133 @@
+import tensorflow as tf
+import numpy as np
+import pathlib
+import matplotlib.pyplot as plt
+import time
+
+# ==========================================
+# 1. Data Preparation (Simulation)
+# ==========================================
+print("Loading dataset...")
+
+# We use CIFAR-10 as a proxy for a Recyclable Items dataset to ensure this script 
+# is immediately runnable without external downloads.
+# MAPPING: 
+# Recyclable (Class 0): Airplane, Automobile, Ship, Truck (Metal/Composite)
+# Non-Recyclable/Organic (Class 1): Bird, Cat, Deer, Dog, Frog, Horse
+(x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
+
+def map_labels(y):
+    # Classes 0, 1, 8, 9 are vehicles (Recyclable/Metal) -> 0
+    # Classes 2, 3, 4, 5, 6, 7 are animals (Organic/Non-Recyclable) -> 1
+    new_y = np.zeros_like(y)
+    for i in range(len(y)):
+        if y[i] in [0, 1, 8, 9]:
+            new_y[i] = 0 # Recyclable
+        else:
+            new_y[i] = 1 # Non-Recyclable
+    return new_y
+
+y_train_bin = map_labels(y_train)
+y_test_bin = map_labels(y_test)
+
+# Normalize pixel values
+x_train = x_train.astype('float32') / 255.0
+x_test = x_test.astype('float32') / 255.0
+
+class_names = ['Recyclable (Metal/Plastic)', 'Non-Recyclable (Organic)']
+
+print(f"Training data shape: {x_train.shape}")
+print(f"Test data shape: {x_test.shape}")
+
+# ==========================================
+# 2. Model Definition (Lightweight CNN)
+# ==========================================
+# We build a custom lightweight CNN suitable for Edge devices
+model = tf.keras.models.Sequential([
+    tf.keras.layers.Conv2D(32, (3, 3), activation='relu', input_shape=(32, 32, 3)),
+    tf.keras.layers.MaxPooling2D((2, 2)),
+    tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
+    tf.keras.layers.MaxPooling2D((2, 2)),
+    tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
+    tf.keras.layers.Flatten(),
+    tf.keras.layers.Dense(64, activation='relu'),
+    tf.keras.layers.Dense(2) # 2 classes
+])
+
+model.compile(optimizer='adam',
+              loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+              metrics=['accuracy'])
+
+# ==========================================
+# 3. Training
+# ==========================================
+print("\nStarting training (Simulated lightweight run)...")
+# Training for just 3 epochs for demonstration speed
+history = model.fit(x_train, y_train_bin, epochs=3, validation_data=(x_test, y_test_bin))
+
+# ==========================================
+# 4. Conversion to TensorFlow Lite
+# ==========================================
+print("\nConverting model to TensorFlow Lite...")
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+
+# OPTIONAL: Apply Quantization (reduces size by ~4x, slightly lowers accuracy)
+# This is crucial for Edge AI hardware like ESP32 or older Raspberry Pis
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+
+tflite_model = converter.convert()
+
+tflite_filename = 'recycling_model_quant.tflite'
+with open(tflite_filename, 'wb') as f:
+    f.write(tflite_model)
+
+print(f"Model saved as '{tflite_filename}'")
+print(f"Model Size: {len(tflite_model) / 1024:.2f} KB")
+
+# ==========================================
+# 5. Inference Simulation (The Edge AI Part)
+# ==========================================
+print("\nRunning TFLite Inference (Simulating Raspberry Pi)...")
+
+# Load the TFLite model and allocate tensors.
+interpreter = tf.lite.Interpreter(model_path=tflite_filename)
+interpreter.allocate_tensors()
+
+# Get input and output tensors.
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+# Grab a random test image
+idx = np.random.randint(0, len(x_test))
+test_image = x_test[idx]
+actual_label = class_names[y_test_bin[idx][0]]
+
+# Preprocess image to match input requirements (add batch dimension)
+input_data = np.expand_dims(test_image, axis=0).astype(np.float32)
+
+# Measure Latency
+start_time = time.time()
+
+interpreter.set_tensor(input_details[0]['index'], input_data)
+interpreter.invoke()
+output_data = interpreter.get_tensor(output_details[0]['index'])
+
+end_time = time.time()
+latency_ms = (end_time - start_time) * 1000
+
+# Process result
+predicted_idx = np.argmax(output_data)
+predicted_label = class_names[predicted_idx]
+confidence = tf.nn.softmax(output_data)[0][predicted_idx]
+
+print(f"--- Edge Inference Results ---")
+print(f"Input Image ID: {idx}")
+print(f"Actual Class: {actual_label}")
+print(f"Predicted Class: {predicted_label}")
+print(f"Confidence: {confidence.numpy():.2%}")
+print(f"Inference Latency: {latency_ms:.2f} ms")
+
+if actual_label == predicted_label:
+    print("Result: SUCCESS")
+else:
+    print("Result: FAILURE")
